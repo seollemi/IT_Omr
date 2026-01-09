@@ -15,5 +15,24 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintEnd_toEndOf="parent" />
 
+    <Button
+        android:id="@+id/camera_tp"
+        android:layout_width="260dp"
+        android:layout_height="0dp"
+        android:layout_marginTop="372dp"
+        android:layout_marginBottom="33dp"
+        android:background="@drawable/ripple_effect"
+        android:fontFamily="sans-serif-medium"
+        android:gravity="center"
+        android:text="Scan"
+        android:textAllCaps="false"
+        android:textColor="@android:color/white"
+        android:textSize="17sp"
+        android:textStyle="bold"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintHorizontal_bias="0.496"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="parent" />
+
 
 </androidx.constraintlayout.widget.ConstraintLayout>

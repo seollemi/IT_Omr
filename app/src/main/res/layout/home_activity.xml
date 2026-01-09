@@ -35,7 +35,7 @@
         android:layout_marginBottom="386dp"
         android:background="@drawable/btn_secondary"
         android:fontFamily="sans-serif-medium"
-        android:text="View Results"
+        android:text="Answer key"
         android:textAllCaps="false"
         android:textColor="#6B86F5"
         android:textSize="15sp"

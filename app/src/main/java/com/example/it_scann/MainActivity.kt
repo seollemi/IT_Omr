@@ -27,7 +27,11 @@ class MainActivity : ComponentActivity() {
 
         findViewById<Button>(R.id.btn_results).setOnClickListener {
             Log.d("MainActivity", "Scan button clicked")
-            startActivity(Intent(this, Answer_key::class.java))
+            //startActivity(Intent(this, Answer_key::class.java))
+            val testMat = loadTestImage(this, R.drawable.answer_sheet)
+            testAnalyzeImage(testMat)
+            testMat.release()
+
         }
 
     }

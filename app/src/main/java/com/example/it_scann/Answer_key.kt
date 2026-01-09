@@ -66,7 +66,7 @@ class Answer_key : AppCompatActivity() {
         adapter.setAnswers(answersPerTest[0]!!)
 
         // 🔹 Spinner
-        val spinner = findViewById<Spinner>(R.id.testNumberSpinner)
+        val spinner = findViewById<Spinner>(R.id.testElementSpinner)
 
         ArrayAdapter.createFromResource(
             this,
@@ -150,13 +150,11 @@ class Answer_key : AppCompatActivity() {
 
                     db.answerKeyDao().upsertAll(list)
 
-                    // ✅ SUCCESS POPUP
                     showSuccessDialog()
 
                 } catch (e: Exception) {
                     Log.e("AnswerKey", "Save failed", e)
 
-                    // ❌ ERROR POPUP
                     showErrorDialog("Failed to save answers. Please try again.")
                 }
             }

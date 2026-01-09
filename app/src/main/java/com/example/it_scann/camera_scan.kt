@@ -1,8 +1,11 @@
 package com.example.it_scann
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.util.Log
+import android.widget.Button
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -26,8 +29,11 @@ class camera_scan : AppCompatActivity() {
         // Init OpenCV
         OpenCVLoader.initDebug()
 
+
+
         if (allPermissionsGranted()) {
             startCamera()
+
         } else {
             ActivityCompat.requestPermissions(
                 this,
@@ -36,6 +42,8 @@ class camera_scan : AppCompatActivity() {
             )
         }
     }
+
+
 
     private fun startCamera() {
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
@@ -66,18 +74,20 @@ class camera_scan : AppCompatActivity() {
                 cameraSelector,
                 preview,
                 imageAnalysis
+
             )
 
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun allPermissionsGranted() =
-        ContextCompat.checkSelfPermission(
-            this, Manifest.permission.CAMERA
-        ) == PackageManager.PERMISSION_GRANTED
+        ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED &&
+                ContextCompat.checkSelfPermission(this, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
 
     override fun onDestroy() {
         super.onDestroy()
         cameraExecutor.shutdown()
     }
+
 }
