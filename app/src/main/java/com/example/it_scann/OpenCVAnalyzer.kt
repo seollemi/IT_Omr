@@ -1,227 +1,294 @@
 package com.example.it_scann
 
+import android.content.ContentValues
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import android.util.Log
 import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
-import org.opencv.core.Mat
-import org.opencv.core.Core
-import org.opencv.core.Rect
-import org.opencv.core.Size
-import org.opencv.imgproc.Imgproc
-import org.opencv.core.Scalar
 import org.opencv.android.Utils
-import android.graphics.BitmapFactory
-import android.graphics.Bitmap
-import android.content.Context
-import org.opencv.imgcodecs.Imgcodecs
+import org.opencv.core.*
+import org.opencv.imgproc.Imgproc
 
-class OpenCVAnalyzer : ImageAnalysis.Analyzer {
+private const val DEBUG_DRAW = true
+
+/* ====================== CAMERA ANALYZER ====================== */
+
+class OpenCVAnalyzer(
+    private val context: Context
+) : ImageAnalysis.Analyzer {
 
     override fun analyze(image: ImageProxy) {
-
-
         val src = image.toMat()
-        val debugMat = src.clone()
 
-        val gray = Mat()
-        val blurred = Mat()
-        val thresh = Mat()
+        try {
+            val warped = detectAndWarpSheet(src) ?: return
+            if (DEBUG_DRAW) saveDebugMat(context, warped, "01_warped")
 
-        Imgproc.cvtColor(src, gray, Imgproc.COLOR_BGR2GRAY)
-        Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+            val thresh = thresholdForOMR(context, warped)
 
-        Imgproc.adaptiveThreshold(
-            blurred,
-            thresh,
-            255.0,
-            Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
-            Imgproc.THRESH_BINARY_INV,
-            11,
-            2.0
-        )
+            val answers = mutableListOf<String>()
+            processAnswerSheetContours(context, thresh, warped, answers)
 
-        processAnswerSheet(thresh, debugMat)
+            answers.forEach { Log.d("OMR", it) }
 
-        // 🔍 DEBUG: save one frame (optional)
-        // Imgcodecs.imwrite("/sdcard/omr_debug.jpg", debugMat)
+            thresh.release()
+            warped.release()
 
-        src.release()
-        debugMat.release()
-        gray.release()
-        blurred.release()
-        thresh.release()
-        image.close()
+        } catch (e: Exception) {
+            Log.e("OMR", "Analyze failed", e)
+        } finally {
+            src.release()
+            image.close()
+        }
     }
-
 }
 
+/* ====================== FILE ANALYSIS ====================== */
 
-fun loadTestImage(context: Context, drawableResId: Int): Mat {
-    // Load Bitmap from drawable resource
-    val bitmap = BitmapFactory.decodeResource(context.resources, drawableResId)
-    val mat = Mat()
-    Utils.bitmapToMat(bitmap, mat)
-    return mat
+fun analyzeImageFile(context: Context, imageUri: Uri) {
+    context.contentResolver.openInputStream(imageUri)?.use {
+        val bitmap = BitmapFactory.decodeStream(it) ?: return
+        val mat = Mat()
+        Utils.bitmapToMat(bitmap, mat)
+
+        val warped = detectAndWarpSheet(mat) ?: return
+        if (DEBUG_DRAW) saveDebugMat(context, warped, "01_warped")
+
+        val thresh = thresholdForOMR(context, warped)
+
+        val answers = mutableListOf<String>()
+        processAnswerSheetContours(context, thresh, warped, answers)
+
+        answers.forEach { Log.d("OMR", it) }
+
+        mat.release()
+        warped.release()
+        thresh.release()
+    }
 }
-fun testAnalyzeImage(testMat: Mat) {
 
-    val src = testMat.clone()
-    val debugMat = src.clone()
+/* ====================== SHEET DETECTION ====================== */
 
+fun detectAndWarpSheet(src: Mat): Mat? {
     val gray = Mat()
-    val blurred = Mat()
+    val blur = Mat()
+    val edges = Mat()
+
+    Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+    Imgproc.GaussianBlur(gray, blur, Size(5.0, 5.0), 0.0)
+    Imgproc.Canny(blur, edges, 75.0, 200.0)
+
+    val contours = mutableListOf<MatOfPoint>()
+    Imgproc.findContours(
+        edges,
+        contours,
+        Mat(),
+        Imgproc.RETR_EXTERNAL,
+        Imgproc.CHAIN_APPROX_SIMPLE
+    )
+
+    contours.sortByDescending { Imgproc.contourArea(it) }
+
+    val sheet = contours.firstNotNullOfOrNull { c ->
+        val peri = Imgproc.arcLength(MatOfPoint2f(*c.toArray()), true)
+        val approx = MatOfPoint2f()
+        Imgproc.approxPolyDP(MatOfPoint2f(*c.toArray()), approx, 0.02 * peri, true)
+        if (approx.total() == 4L) approx else null
+    } ?: return null
+
+    val ordered = orderPoints(sheet.toArray())
+    val dst = MatOfPoint2f(
+        Point(0.0, 0.0),
+        Point(1200.0, 0.0),
+        Point(1200.0, 1600.0),
+        Point(0.0, 1600.0)
+    )
+
+    val matrix = Imgproc.getPerspectiveTransform(MatOfPoint2f(*ordered), dst)
+    val warped = Mat()
+    Imgproc.warpPerspective(src, warped, matrix, Size(1200.0, 1600.0))
+
+    gray.release()
+    blur.release()
+    edges.release()
+
+    return warped
+}
+
+fun orderPoints(pts: Array<Point>): Array<Point> {
+    val rect = Array(4) { Point() }
+    val sum = pts.map { it.x + it.y }
+    val diff = pts.map { it.y - it.x }
+
+    rect[0] = pts[sum.indexOf(sum.min())]
+    rect[2] = pts[sum.indexOf(sum.max())]
+    rect[1] = pts[diff.indexOf(diff.min())]
+    rect[3] = pts[diff.indexOf(diff.max())]
+
+    return rect
+}
+
+/* ====================== THRESHOLD ====================== */
+
+fun thresholdForOMR(context: Context, src: Mat): Mat {
+    val gray = Mat()
+    val blur = Mat()
     val thresh = Mat()
 
-    Imgproc.cvtColor(src, gray, Imgproc.COLOR_BGR2GRAY)
-    Imgproc.GaussianBlur(gray, blurred, Size(5.0, 5.0), 0.0)
+    Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
+    Imgproc.GaussianBlur(gray, blur, Size(3.0, 3.0), 0.0)
+
     Imgproc.adaptiveThreshold(
-        blurred,
+        blur,
         thresh,
         255.0,
         Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
         Imgproc.THRESH_BINARY_INV,
-        11,
-        2.0
+        31,
+        3.0
     )
 
-    processAnswerSheet(thresh, debugMat)
+    if (DEBUG_DRAW) saveDebugMat(context, thresh, "02_thresh")
 
-    // Save debugMat to file to see results
-    Imgcodecs.imwrite("/sdcard/Download/omr_test_output.jpg", debugMat);
-
-
-    src.release()
-    debugMat.release()
     gray.release()
-    blurred.release()
-    thresh.release()
+    blur.release()
+    return thresh
 }
 
+fun splitIntoElements(
+    boxes: List<Rect>,
+    imageWidth: Int,
+    elementCount: Int = 4
+): List<List<Rect>> {
 
-fun safeSubmat(src: Mat, rect: Rect): Mat? {
-    if (
-        rect.x < 0 || rect.y < 0 ||
-        rect.x + rect.width > src.cols() ||
-        rect.y + rect.height > src.rows()
-    ) {
-        Log.e("OMR", "Rect out of bounds: $rect  Mat=${src.cols()}x${src.rows()}")
-        return null
+    val elementWidth = imageWidth / elementCount
+    val elements = List(elementCount) { mutableListOf<Rect>() }
+
+    for (r in boxes) {
+        val centerX = r.x + r.width / 2
+        val index = (centerX / elementWidth)
+            .coerceIn(0, elementCount - 1)
+        elements[index].add(r)
     }
-    return src.submat(rect)
+
+    return elements
 }
 
-fun processAnswerSheet(thresh: Mat, debugMat: Mat) {
 
-    Log.d("OMR", "Thresh size: ${thresh.cols()} x ${thresh.rows()}")
 
-    val elemRects = listOf(
-        Rect(100, 300, 900, 1200),
-        Rect(1100, 300, 900, 1200),
-        Rect(100, 1600, 900, 1200),
-        Rect(1100, 1600, 900, 1200)
+/* ====================== OMR CORE ====================== */
+
+fun processAnswerSheetContours(
+    context: Context,
+    thresh: Mat,
+    debugMat: Mat,
+    answers: MutableList<String>
+) {
+    val contours = mutableListOf<MatOfPoint>()
+    Imgproc.findContours(
+        thresh,
+        contours,
+        Mat(),
+        Imgproc.RETR_LIST,
+        Imgproc.CHAIN_APPROX_SIMPLE
     )
 
-    elemRects.forEachIndexed { index, rect ->
+    Log.d("OMR", "Contours found: ${contours.size}")
 
-        if (DEBUG_DRAW) {
-            drawRect(debugMat, rect, Scalar(0.0, 255.0, 0.0), 3) // 🟩 GREEN
-        }
+    val boxes = contours.mapNotNull {
+        val r = Imgproc.boundingRect(it)
 
-        val section = safeSubmat(thresh, rect)
-        if (section != null) {
-            scanSection(section, debugMat, rect, "Elem${index + 1}")
-            section.release()
-        }
-    }
-}
+        val minSize = 18
+        val maxSize = 80
 
-
-
-fun scanSection(
-    section: Mat,
-    debugMat: Mat,
-    sectionRect: Rect,
-    label: String
-) {
-
-    val questions = 25
-    val choices = 4
-
-    val rowHeight = section.rows() / questions
-    val colWidth = section.cols() / choices
-
-    if (rowHeight <= 20 || colWidth <= 40) {
-        Log.e("OMR", "$label grid too small")
-        return
+        if (
+            r.width in minSize..maxSize &&
+            r.height in minSize..maxSize
+        ) r else null
     }
 
-    for (q in 0 until questions) {
-        var selected = -1
-        var maxFilled = 0
-        val bubbleRects = mutableListOf<Rect>()
+    Log.d("OMR", "Valid boxes: ${boxes.size}")
+    if (boxes.size < 80) return   // 4 elements × 25 × 4 choices
 
-        for (c in 0 until choices) {
+    // 🔹 SPLIT INTO ELEMENTS (COLUMNS)
+    val elements = splitIntoElements(
+        boxes,
+        debugMat.cols(),
+        elementCount = 4
+    )
 
-            val x = c * colWidth
-            val y = q * rowHeight
+    val choices = listOf("A", "B", "C", "D")
 
-            val rect = Rect(
-                x + 10,
-                y + 10,
-                colWidth - 20,
-                rowHeight - 20
+    elements.forEachIndexed { elementIndex, elementBoxes ->
+
+        if (elementBoxes.isEmpty()) return@forEachIndexed
+
+        // 🔹 SORT TOP → BOTTOM
+        val sorted = elementBoxes.sortedBy { it.y }
+
+        // 🔹 GROUP INTO QUESTIONS (4 bubbles each)
+        val questions = sorted.chunked(4)
+
+        questions.forEachIndexed { qIndex, row ->
+
+            if (row.size != 4) return@forEachIndexed
+
+            val fill = DoubleArray(4)
+
+            for (i in 0 until 4) {
+                val roi = thresh.submat(row[i])
+                fill[i] = Core.countNonZero(roi).toDouble() / row[i].area()
+                roi.release()
+            }
+
+            val selected = fill.indices.maxByOrNull { fill[it] } ?: -1
+            val answer =
+                if (selected >= 0 && fill[selected] > 0.12)
+                    choices[selected]
+                else "INVALID"
+
+            answers.add(
+                "Element ${elementIndex + 1} - Q${qIndex + 1}: $answer"
             )
 
-            bubbleRects.add(rect)
-
-            val bubble = safeSubmat(section, rect) ?: continue
-            val filledPixels = Core.countNonZero(bubble)
-
-            if (filledPixels > maxFilled) {
-                maxFilled = filledPixels
-                selected = c
-            }
-
-            bubble.release()
-        }
-
-        // 🎨 DRAW BUBBLES
-        if (DEBUG_DRAW) {
-            bubbleRects.forEachIndexed { index, r ->
-                val absoluteRect = Rect(
-                    sectionRect.x + r.x,
-                    sectionRect.y + r.y,
-                    r.width,
-                    r.height
-                )
-
-                val color = if (index == selected)
-                    Scalar(0.0, 0.0, 255.0)   // 🟥 RED = selected
-                else
-                    Scalar(255.0, 0.0, 0.0)   // 🟦 BLUE = others
-
-                drawRect(debugMat, absoluteRect, color, 2)
+            if (DEBUG_DRAW) {
+                row.forEachIndexed { i, r ->
+                    val color =
+                        if (i == selected) Scalar(0.0, 0.0, 255.0)
+                        else Scalar(255.0, 0.0, 0.0)
+                    Imgproc.rectangle(debugMat, r, color, 2)
+                }
             }
         }
-
-        val answer = listOf("A", "B", "C", "D").getOrElse(selected) { "Blank" }
-        Log.d("OMR", "$label Q${q + 1}: $answer")
     }
 
-}
-private const val DEBUG_DRAW = true
-
-fun drawRect(mat: Mat, rect: Rect, color: Scalar, thickness: Int = 2) {
-    Imgproc.rectangle(
-        mat,
-        rect.tl(),
-        rect.br(),
-        color,
-        thickness
-    )
+    if (DEBUG_DRAW) saveDebugMat(context, debugMat, "04_detected_boxes")
 }
 
 
+    /* ====================== UTIL ====================== */
 
+fun saveDebugMat(context: Context, mat: Mat, name: String) {
+    val bitmap = Bitmap.createBitmap(mat.cols(), mat.rows(), Bitmap.Config.ARGB_8888)
+    Utils.matToBitmap(mat, bitmap)
 
+    val values = ContentValues().apply {
+        put(MediaStore.MediaColumns.DISPLAY_NAME, "$name.jpg")
+        put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+        put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DCIM + "/OMR")
+    }
 
+    context.contentResolver.insert(
+        MediaStore.Images.Media.EXTERNAL_CONTENT_URI,
+        values
+    )?.let { uri ->
+        context.contentResolver.openOutputStream(uri)?.use {
+            bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it)
+        }
+    }
+}

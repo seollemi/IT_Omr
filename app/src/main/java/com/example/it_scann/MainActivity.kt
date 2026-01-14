@@ -28,9 +28,16 @@ class MainActivity : ComponentActivity() {
         findViewById<Button>(R.id.btn_results).setOnClickListener {
             Log.d("MainActivity", "Scan button clicked")
             //startActivity(Intent(this, Answer_key::class.java))
-            val testMat = loadTestImage(this, R.drawable.answer_sheet)
-            testAnalyzeImage(testMat)
-            testMat.release()
+            //val testMat = loadTestImage(this, R.drawable.answer_sheet)
+            //testAnalyzeImage(this, testMat)
+            //testMat.release()
+
+           // val analyzer = OpenCVAnalyzer()
+           // analyzer.testOMRFromImage(this,R.drawable.answer_sheet)
+            //analyzer.testOMRFromImage(this, R.drawable.answer_sheet)
+
+
+
 
         }
 
