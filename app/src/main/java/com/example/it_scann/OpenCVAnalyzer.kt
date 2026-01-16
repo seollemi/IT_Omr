@@ -13,6 +13,7 @@ import androidx.camera.core.ImageProxy
 import org.opencv.android.Utils
 import org.opencv.core.*
 import org.opencv.imgproc.Imgproc
+import androidx.core.graphics.createBitmap
 
 private const val DEBUG_DRAW = true
 
@@ -23,7 +24,9 @@ class OpenCVAnalyzer(
 ) : ImageAnalysis.Analyzer {
 
     override fun analyze(image: ImageProxy) {
-        val src = image.toMat()
+        val raw = image.toMat()
+        val src = rotateMatIfNeeded(raw, image.imageInfo.rotationDegrees)
+        raw.release()
 
         try {
             val warped = detectAndWarpSheet(src) ?: return
@@ -32,7 +35,7 @@ class OpenCVAnalyzer(
             val thresh = thresholdForOMR(context, warped)
 
             val answers = mutableListOf<String>()
-            processAnswerSheetContours(context, thresh, warped, answers)
+            processAnswerSheetGrid(context, thresh, warped, answers)
 
             answers.forEach { Log.d("OMR", it) }
 
@@ -40,7 +43,7 @@ class OpenCVAnalyzer(
             warped.release()
 
         } catch (e: Exception) {
-            Log.e("OMR", "Analyze failed", e)
+            Log.e("OMR", "OMR analyze failed", e)
         } finally {
             src.release()
             image.close()
@@ -48,29 +51,35 @@ class OpenCVAnalyzer(
     }
 }
 
+
 /* ====================== FILE ANALYSIS ====================== */
 
 fun analyzeImageFile(context: Context, imageUri: Uri) {
-    context.contentResolver.openInputStream(imageUri)?.use {
-        val bitmap = BitmapFactory.decodeStream(it) ?: return
-        val mat = Mat()
-        Utils.bitmapToMat(bitmap, mat)
+    context.contentResolver.openInputStream(imageUri)?.use { input ->
+        val bitmap = BitmapFactory.decodeStream(input) ?: return
 
-        val warped = detectAndWarpSheet(mat) ?: return
+        val raw = Mat()
+        Utils.bitmapToMat(bitmap, raw)
+
+        val rotated = rotateBitmapIfNeeded(context, imageUri, raw)
+        raw.release()
+
+        val warped = detectAndWarpSheet(rotated) ?: return
         if (DEBUG_DRAW) saveDebugMat(context, warped, "01_warped")
 
         val thresh = thresholdForOMR(context, warped)
 
         val answers = mutableListOf<String>()
-        processAnswerSheetContours(context, thresh, warped, answers)
+        processAnswerSheetGrid(context, thresh, warped, answers)
 
         answers.forEach { Log.d("OMR", it) }
 
-        mat.release()
-        warped.release()
         thresh.release()
+        warped.release()
+        rotated.release()
     }
 }
+
 
 /* ====================== SHEET DETECTION ====================== */
 
@@ -160,6 +169,7 @@ fun thresholdForOMR(context: Context, src: Mat): Mat {
     return thresh
 }
 
+
 fun splitIntoElements(
     boxes: List<Rect>,
     imageWidth: Int,
@@ -183,98 +193,82 @@ fun splitIntoElements(
 
 /* ====================== OMR CORE ====================== */
 
-fun processAnswerSheetContours(
+fun processAnswerSheetGrid(
     context: Context,
     thresh: Mat,
     debugMat: Mat,
     answers: MutableList<String>
 ) {
-    val contours = mutableListOf<MatOfPoint>()
-    Imgproc.findContours(
-        thresh,
-        contours,
-        Mat(),
-        Imgproc.RETR_LIST,
-        Imgproc.CHAIN_APPROX_SIMPLE
+    val questions = 25
+    val choices = 4
+    val labels = listOf("A", "B", "C", "D")
+
+    data class Column(val name: String, val start: Double, val width: Double)
+
+    val columns = listOf(
+        Column("Elem 1", 0.05, 0.20),
+        Column("Elem 2", 0.27, 0.20),
+        Column("Elem 3", 0.49, 0.20),
+        Column("Elem 4", 0.71, 0.20)
     )
 
-    Log.d("OMR", "Contours found: ${contours.size}")
+    for (col in columns) {
 
-    val boxes = contours.mapNotNull {
-        val r = Imgproc.boundingRect(it)
+        val xStart = (thresh.cols() * col.start).toInt()
+        val xEnd = (xStart + thresh.cols() * col.width).toInt()
 
-        val minSize = 18
-        val maxSize = 80
+        val colMat = thresh.submat(0, thresh.rows(), xStart, xEnd)
 
-        if (
-            r.width in minSize..maxSize &&
-            r.height in minSize..maxSize
-        ) r else null
-    }
+        val qHeight = colMat.rows() / questions
+        val cWidth = colMat.cols() / choices
 
-    Log.d("OMR", "Valid boxes: ${boxes.size}")
-    if (boxes.size < 80) return   // 4 elements × 25 × 4 choices
+        for (q in 0 until questions) {
 
-    // 🔹 SPLIT INTO ELEMENTS (COLUMNS)
-    val elements = splitIntoElements(
-        boxes,
-        debugMat.cols(),
-        elementCount = 4
-    )
+            val fill = DoubleArray(choices)
 
-    val choices = listOf("A", "B", "C", "D")
+            for (c in 0 until choices) {
+                val roi = colMat.submat(
+                    q * qHeight,
+                    (q + 1) * qHeight,
+                    c * cWidth,
+                    (c + 1) * cWidth
+                )
 
-    elements.forEachIndexed { elementIndex, elementBoxes ->
-
-        if (elementBoxes.isEmpty()) return@forEachIndexed
-
-        // 🔹 SORT TOP → BOTTOM
-        val sorted = elementBoxes.sortedBy { it.y }
-
-        // 🔹 GROUP INTO QUESTIONS (4 bubbles each)
-        val questions = sorted.chunked(4)
-
-        questions.forEachIndexed { qIndex, row ->
-
-            if (row.size != 4) return@forEachIndexed
-
-            val fill = DoubleArray(4)
-
-            for (i in 0 until 4) {
-                val roi = thresh.submat(row[i])
-                fill[i] = Core.countNonZero(roi).toDouble() / row[i].area()
+                fill[c] = Core.countNonZero(roi).toDouble() / roi.total()
                 roi.release()
             }
 
-            val selected = fill.indices.maxByOrNull { fill[it] } ?: -1
-            val answer =
-                if (selected >= 0 && fill[selected] > 0.12)
-                    choices[selected]
-                else "INVALID"
+            val ranked = fill.mapIndexed { i, v -> i to v }.sortedByDescending { it.second }
+            val best = ranked[0]
+            val second = ranked[1]
 
-            answers.add(
-                "Element ${elementIndex + 1} - Q${qIndex + 1}: $answer"
-            )
+            val answer = when {
+                best.second < 0.15 -> "INVALID"
+                best.second / second.second < 1.4 -> "MULTIPLE"
+                else -> labels[best.first]
+            }
 
-            if (DEBUG_DRAW) {
-                row.forEachIndexed { i, r ->
-                    val color =
-                        if (i == selected) Scalar(0.0, 0.0, 255.0)
-                        else Scalar(255.0, 0.0, 0.0)
-                    Imgproc.rectangle(debugMat, r, color, 2)
-                }
+            answers.add("${col.name} - Q${q + 1}: $answer")
+
+            if (answer in labels) {
+                val cx = xStart + best.first * cWidth + cWidth / 2
+                val cy = q * qHeight + qHeight / 2
+                Imgproc.circle(debugMat, Point(cx.toDouble(), cy.toDouble()), 18, Scalar(0.0, 0.0, 255.0), 3)
             }
         }
+
+        colMat.release()
     }
 
-    if (DEBUG_DRAW) saveDebugMat(context, debugMat, "04_detected_boxes")
+    if (DEBUG_DRAW) saveDebugMat(context, debugMat, "04_detected")
 }
+
 
 
     /* ====================== UTIL ====================== */
 
 fun saveDebugMat(context: Context, mat: Mat, name: String) {
-    val bitmap = Bitmap.createBitmap(mat.cols(), mat.rows(), Bitmap.Config.ARGB_8888)
+    val bitmap = createBitmap(mat.cols(), mat.rows())
     Utils.matToBitmap(mat, bitmap)
 
     val values = ContentValues().apply {
@@ -292,3 +286,27 @@ fun saveDebugMat(context: Context, mat: Mat, name: String) {
         }
     }
 }
+
+fun rotateBitmapIfNeeded(context: Context, uri: Uri, mat: Mat): Mat {
+    val input = context.contentResolver.openInputStream(uri) ?: return mat
+    val exif = androidx.exifinterface.media.ExifInterface(input)
+    input.close()
+
+    val orientation = exif.getAttributeInt(
+        androidx.exifinterface.media.ExifInterface.TAG_ORIENTATION,
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_NORMAL
+    )
+
+    val rotated = Mat()
+    when (orientation) {
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_90 ->
+            Core.rotate(mat, rotated, Core.ROTATE_90_CLOCKWISE)
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_180 ->
+            Core.rotate(mat, rotated, Core.ROTATE_180)
+        androidx.exifinterface.media.ExifInterface.ORIENTATION_ROTATE_270 ->
+            Core.rotate(mat, rotated, Core.ROTATE_90_COUNTERCLOCKWISE)
+        else -> mat.copyTo(rotated)
+    }
+    return rotated
+}
+
