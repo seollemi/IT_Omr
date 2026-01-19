@@ -159,7 +159,7 @@ fun thresholdForOMR(context: Context, src: Mat): Mat {
         Imgproc.ADAPTIVE_THRESH_GAUSSIAN_C,
         Imgproc.THRESH_BINARY_INV,
         31,
-        3.0
+        15.0
     )
 
     if (DEBUG_DRAW) saveDebugMat(context, thresh, "02_thresh")
@@ -168,29 +168,6 @@ fun thresholdForOMR(context: Context, src: Mat): Mat {
     blur.release()
     return thresh
 }
-
-
-fun splitIntoElements(
-    boxes: List<Rect>,
-    imageWidth: Int,
-    elementCount: Int = 4
-): List<List<Rect>> {
-
-    val elementWidth = imageWidth / elementCount
-    val elements = List(elementCount) { mutableListOf<Rect>() }
-
-    for (r in boxes) {
-        val centerX = r.x + r.width / 2
-        val index = (centerX / elementWidth)
-            .coerceIn(0, elementCount - 1)
-        elements[index].add(r)
-    }
-
-    return elements
-}
-
-
-
 /* ====================== OMR CORE ====================== */
 
 fun processAnswerSheetGrid(
@@ -203,21 +180,28 @@ fun processAnswerSheetGrid(
     val choices = 4
     val labels = listOf("A", "B", "C", "D")
 
-    data class Column(val name: String, val start: Double, val width: Double)
+    data class Column(val name: String, val startx: Double, val width: Double, val starty: Double, val height: Double)
 
     val columns = listOf(
-        Column("Elem 1", 0.05, 0.20),
-        Column("Elem 2", 0.27, 0.20),
-        Column("Elem 3", 0.49, 0.20),
-        Column("Elem 4", 0.71, 0.20)
+        Column("Elem 2", 0.05, 0.20,0.08,0.90),
+        Column("Elem 3", 0.30, 0.20,0.08,0.90),
+        Column("Elem 4a", 0.54, 0.20,0.08,0.90),
+        Column("Elem 4b", 0.78, 0.20,0.08,0.90)
     )
 
     for (col in columns) {
 
-        val xStart = (thresh.cols() * col.start).toInt()
-        val xEnd = (xStart + thresh.cols() * col.width).toInt()
+        val imgH = thresh.rows()
+        val imgW = thresh.cols()
 
-        val colMat = thresh.submat(0, thresh.rows(), xStart, xEnd)
+        val xStart = (imgW * col.startx).toInt().coerceIn(0, imgW - 1)
+        val xEnd = (xStart + imgW * col.width).toInt().coerceIn(xStart + 1, imgW)
+
+        val yStart = (imgH * col.starty).toInt().coerceIn(0, imgH - 1)
+        val yEnd = (yStart + imgH * col.height).toInt().coerceIn(yStart + 1, imgH)
+
+        val colMat = thresh.submat(yStart, yEnd, xStart, xEnd)
+
 
         val qHeight = colMat.rows() / questions
         val cWidth = colMat.cols() / choices
@@ -227,14 +211,38 @@ fun processAnswerSheetGrid(
             val fill = DoubleArray(choices)
 
             for (c in 0 until choices) {
-                val roi = colMat.submat(
-                    q * qHeight,
-                    (q + 1) * qHeight,
-                    c * cWidth,
-                    (c + 1) * cWidth
+                val padX = (cWidth * 0.15).toInt()
+                val padY = (qHeight * 0.10).toInt()
+
+                val y1 = q * qHeight
+                val y2 = minOf((q + 1) * qHeight, colMat.rows())
+
+                val x1 = c * cWidth
+                val x2 = minOf((c + 1) * cWidth, colMat.cols())
+
+                if (y2 <= y1 || x2 <= x1) continue
+
+                val roi = colMat.submat(y1, y2, x1, x2)
+
+
+                val filledPixels = Core.countNonZero(roi)
+                val areaRatio = filledPixels.toDouble() / roi.total()
+
+                val contours = mutableListOf<MatOfPoint>()
+                Imgproc.findContours(
+                    roi.clone(),
+                    contours,
+                    Mat(),
+                    Imgproc.RETR_EXTERNAL,
+                    Imgproc.CHAIN_APPROX_SIMPLE
                 )
 
-                fill[c] = Core.countNonZero(roi).toDouble() / roi.total()
+                val maxContourArea = contours.maxOfOrNull {
+                    Imgproc.contourArea(it)
+                } ?: 0.0
+
+                fill[c] = areaRatio + (maxContourArea / roi.total())
+
                 roi.release()
             }
 
@@ -242,9 +250,13 @@ fun processAnswerSheetGrid(
             val best = ranked[0]
             val second = ranked[1]
 
+            val avgFill = fill.average()
+            val minFill = avgFill * 1.2
+            val dominanceRatio = 1.4
+
             val answer = when {
-                best.second < 0.15 -> "INVALID"
-                best.second / second.second < 1.4 -> "MULTIPLE"
+                best.second < minFill -> "INVALID"
+                best.second / second.second < dominanceRatio -> "MULTIPLE"
                 else -> labels[best.first]
             }
 
@@ -252,9 +264,43 @@ fun processAnswerSheetGrid(
 
             if (answer in labels) {
                 val cx = xStart + best.first * cWidth + cWidth / 2
-                val cy = q * qHeight + qHeight / 2
-                Imgproc.circle(debugMat, Point(cx.toDouble(), cy.toDouble()), 18, Scalar(0.0, 0.0, 255.0), 3)
+                val cy = yStart + q * qHeight + qHeight / 2
+                Imgproc.circle(debugMat, Point(cx.toDouble(), cy.toDouble()), 10, Scalar(0.0, 0.0, 255.0), 3)
+
             }
+
+            Imgproc.rectangle(
+                debugMat,
+                Point(xStart.toDouble(), yStart.toDouble()),
+                Point(xEnd.toDouble(), yEnd.toDouble()),
+                Scalar(255.0, 0.0, 0.0),
+                2
+            )
+
+            for (i in 0..questions) {
+                val y = yStart + i * qHeight
+                Imgproc.line(
+                    debugMat,
+                    Point(xStart.toDouble(), y.toDouble()),
+                    Point(xEnd.toDouble(), y.toDouble()),
+                    Scalar(0.0, 255.0, 0.0),
+                    1
+                )
+            }
+
+            for (i in 0..choices) {
+                val x = xStart + i * cWidth
+                Imgproc.line(
+                    debugMat,
+                    Point(x.toDouble(), yStart.toDouble()),
+                    Point(x.toDouble(), yEnd.toDouble()),
+                    Scalar(0.0, 255.0, 255.0),
+                    1
+                )
+            }
+
+
+
         }
 
         colMat.release()
