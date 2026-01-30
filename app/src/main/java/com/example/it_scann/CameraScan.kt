@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
 import android.widget.ImageButton
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
@@ -19,6 +20,7 @@ import org.opencv.android.OpenCVLoader
 import java.util.concurrent.Executors
 import com.example.it_scann.analyzeImageFile
 import kotlinx.coroutines.launch
+
 
 
 class CameraScan : AppCompatActivity() {
@@ -38,8 +40,17 @@ class CameraScan : AppCompatActivity() {
 
             Thread {
                 try {
-                    analyzeImageFile(this@CameraScan, savedUri) { detected ->
-                        onAnswersDetected(detected)
+                    analyzeImageFile(this@CameraScan, savedUri) { result ->
+                        // Handle the complete result
+                        result.qrCode?.let { qr ->
+                            Log.d("OMR", "QR Code: $qr")
+                            runOnUiThread {
+                                // Update UI with QR code
+                                // e.g., textViewQR.text = qr
+                            }
+                        }
+
+                        onAnswersDetected(result.answers)
                     }
                 } catch (e: Exception) {
                     Log.e("OMR", "Error analyzing gallery image", e)
@@ -56,11 +67,25 @@ class CameraScan : AppCompatActivity() {
     fun onAnswersDetected(detectedAnswers: List<DetectedAnswer>) {
         lifecycleScope.launch {
             val scores = compareWithAnswerKey(detectedAnswers, answerKeyDao)
-            scores.forEach { (testNumber, score) ->
-                Log.d("OMR", "Test $testNumber scored $score / 25")
+
+            val resultText = buildString {
+                append("FINAL SCORES\n")
+                append("----------------\n")
+                scores.toSortedMap().forEach { (testNumber, score) ->
+                    append("Element ${testNumber + 1}: $score / 25\n")
+                }
             }
+
+            Log.d("OMR", resultText)
+            AlertDialog.Builder(this@CameraScan)
+                .setTitle("Results")
+                .setMessage(resultText)
+                .setPositiveButton("OK", null)
+                .show()
+
         }
     }
+
     private var imageCapture: ImageCapture? = null  // add this
     private var camera: Camera? = null
     private var isFlashOn = false
@@ -70,6 +95,8 @@ class CameraScan : AppCompatActivity() {
         setContentView(R.layout.activity_camera_scan)
 
         previewView = findViewById(R.id.previewView)
+        //previewView.scaleType = PreviewView.ScaleType.FIT_CENTER
+
 
         // Init OpenCV
         OpenCVLoader.initDebug()
@@ -122,26 +149,21 @@ class CameraScan : AppCompatActivity() {
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
 
+           // val aspectRatio = AspectRatio.RATIO_4_3
+            //val rotation = previewView.display.rotation
+
             val preview = Preview.Builder()
-                .setTargetRotation(previewView.display.rotation)
+              //  .setTargetRotation(rotation)
                 .build()
                 .also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
 
-            // Setup ImageCapture use case
             imageCapture = ImageCapture.Builder()
-                .setTargetRotation(previewView.display.rotation)
+                //.setTargetAspectRatio(aspectRatio)
+               // .setTargetRotation(rotation)
+                .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                 .build()
-
-            // We can remove or keep ImageAnalysis if needed; for snapshot processing, you can skip it
-            // val imageAnalysis = ImageAnalysis.Builder()
-            //    .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
-            //    .setTargetRotation(previewView.display.rotation)
-            //    .build()
-            //    .also {
-            //        it.setAnalyzer(cameraExecutor, OpenCVAnalyzer())
-            //    }
 
             val cameraSelector = CameraSelector.DEFAULT_BACK_CAMERA
 
@@ -150,8 +172,7 @@ class CameraScan : AppCompatActivity() {
                 this,
                 cameraSelector,
                 preview,
-                imageCapture // just bind preview and imageCapture
-                //, imageAnalysis if you want real-time too
+                imageCapture
             )
 
         }, ContextCompat.getMainExecutor(this))
@@ -185,8 +206,17 @@ class CameraScan : AppCompatActivity() {
 
                     if (savedUri != null) {
                         // Now load your image from MediaStore URI directly
-                        analyzeImageFile(this@CameraScan, savedUri) { detected ->
-                            onAnswersDetected(detected)
+                        analyzeImageFile(this@CameraScan, savedUri) { result ->
+                            // Handle the complete result
+                            result.qrCode?.let { qr ->
+                                Log.d("OMR", "QR Code: $qr")
+                                runOnUiThread {
+                                    // Update UI with QR code
+                                    // e.g., textViewQR.text = qr
+                                }
+                            }
+
+                            onAnswersDetected(result.answers)
                         }
                     } else {
                         Log.e("CameraX", "Saved URI is null")
