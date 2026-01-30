@@ -66,21 +66,11 @@ class CameraScan : AppCompatActivity() {
                 try {
                     analyzeImageFile(this@CameraScan, savedUri) { result ->
                         // Handle the complete result
-                        result.qrCode?.let { qr ->
-                            Log.d("OMR", "QR Code: $qr")
-                            runOnUiThread {
-                                // Update UI with QR code
-                                // e.g., textViewQR.text = qr
-                            }
-                        }
 
                         onAnswersDetected(result.answers)
                     }
                 } catch (e: Exception) {
                     Log.e("OMR", "Error analyzing gallery image", e)
-                    runOnUiThread {
-                        topCard.visibility = View.GONE
-                    }
                 }
             }.start()
         }
@@ -102,25 +92,23 @@ class CameraScan : AppCompatActivity() {
                     append("Element ${testNumber + 1}: $score / 25\n")
                 }
             }
+            topCard.alpha = 1f
+            bottomCard.alpha = 1f
+            topCard.visibility = View.VISIBLE
+            //bottomCard.visibility = View.VISIBLE
+
+            topCard.postDelayed({
+                fadeOutViews(topCard)
+            }, 100)
 
             Log.d("OMR", resultText)
+            delay(500)
             AlertDialog.Builder(this@CameraScan)
                 .setTitle("Results")
                 .setMessage(resultText)
                 .setPositiveButton("OK", null)
                 .show()
-
         }
-
-        topCard.alpha = 1f
-        bottomCard.alpha = 1f
-        topCard.visibility = View.VISIBLE
-        bottomCard.visibility = View.VISIBLE
-
-        topCard.postDelayed({
-            fadeOutViews(topCard, bottomCard)
-        }, 3000)
-
     }
 
     private var imageCapture: ImageCapture? = null  // add this
@@ -202,7 +190,7 @@ class CameraScan : AppCompatActivity() {
               //  .setTargetRotation(rotation)
                 .build()
                 .also {
-                    it.setSurfaceProvider(previewView.surfaceProvider)
+                    it.surfaceProvider = previewView.surfaceProvider
                 }
 
             imageCapture = ImageCapture.Builder()
@@ -253,14 +241,6 @@ class CameraScan : AppCompatActivity() {
                     if (savedUri != null) {
                         // Now load your image from MediaStore URI directly
                         analyzeImageFile(this@CameraScan, savedUri) { result ->
-                            // Handle the complete result
-                            result.qrCode?.let { qr ->
-                                Log.d("OMR", "QR Code: $qr")
-                                runOnUiThread {
-                                    // Update UI with QR code
-                                    // e.g., textViewQR.text = qr
-                                }
-                            }
 
                             onAnswersDetected(result.answers)
                         }
