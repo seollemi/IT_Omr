@@ -38,10 +38,6 @@ An Android-based **Optical Mark Recognition (OMR)** app that automates the scori
 - [ ] Add batch scanning mode
 - [ ] Export results to CSV/Excel
 
-## 📄 License
-
-This project is licensed under the MIT License — see the [LICENSE](./LICENSE) file for details.
-
 ## 👤 Author
 
 **KC**
